@@ -1,5 +1,7 @@
 flask
+requests
 gunicorn
+pypdf
 reportlab
 python-barcode
 qrcode
