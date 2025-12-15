@@ -3,48 +3,60 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gerador de Etiqueta ZPL</title>
+    <title>Gerador Profissional ZPL</title>
     <style>
-        body { font-family: sans-serif; padding: 20px; max-width: 900px; margin: 0 auto; background-color: #f4f4f9; }
-        h1 { color: #333; text-align: center; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; max-width: 1000px; margin: 0 auto; background-color: #eef2f5; }
+        h1 { color: #2c3e50; text-align: center; margin-bottom: 30px;}
         .container { display: flex; gap: 20px; flex-wrap: wrap; }
-        .input-area { flex: 1; min-width: 300px; }
-        .preview-area { flex: 1; min-width: 300px; }
-        textarea { width: 100%; height: 200px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-family: monospace; }
-        .controls { margin: 15px 0; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        button { padding: 12px 25px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
-        button:hover { background-color: #0056b3; }
-        iframe { width: 100%; height: 500px; border: none; background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        label { font-weight: bold; font-size: 0.9em; }
+        .input-area { flex: 1; min-width: 350px; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .preview-area { flex: 1.5; min-width: 400px; height: 600px; }
+        
+        textarea { width: 100%; height: 250px; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-family: monospace; font-size: 12px; resize: vertical; margin-bottom: 15px;}
+        
+        .controls { margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px; }
+        .control-group { margin-bottom: 15px; }
+        label { display: block; font-weight: 600; margin-bottom: 5px; color: #555; }
+        
+        input[type="file"] { width: 100%; padding: 8px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 4px; }
+        
+        button { width: 100%; padding: 14px; background-color: #27ae60; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; transition: background 0.3s; }
+        button:hover { background-color: #219150; }
+        
+        iframe { width: 100%; height: 100%; border: none; background: white; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        
+        .note { font-size: 0.85em; color: #7f8c8d; margin-top: 10px; line-height: 1.4; }
     </style>
 </head>
 <body>
-    <h1>Conversor ZPL para PDF</h1>
+
+    <h1>Conversor ZPL para PDF (Alta Performance)</h1>
+    
     <div class="container">
         <div class="input-area">
-            <form id="zplForm" action="/api/preview" method="POST" target="pdfFrame">
-                <label>Cole o código ZPL:</label>
-                <textarea name="zpl_code" required placeholder="^XA...^XZ">^XA
-^FO50,50^ADN,36,20^FDTeste Online^FS
-^FO50,100^BCN,100,Y,N,N^FD12345678^FS
-^XZ</textarea>
+            <form id="zplForm" action="/api/preview" method="POST" enctype="multipart/form-data" target="pdfFrame">
+                
+                <label>1. Código ZPL:</label>
+                <textarea name="zpl_code" required placeholder="Cole aqui seu código ZPL..."></textarea>
+
                 <div class="controls">
-                    <div>
-                        <label>Largura (pol):</label>
-                        <input type="text" name="width" value="4" style="width: 50px;">
+                    <div class="control-group">
+                        <label>2. Upload da Logo (Opcional):</label>
+                        <input type="file" name="logo_file" accept="image/png, image/jpeg">
+                        <div class="note">A logo será inserida automaticamente nas etiquetas. Ideal para substituir logos pesadas que travam o sistema.</div>
                     </div>
-                    <div>
-                        <label>Altura (pol):</label>
-                        <input type="text" name="height" value="6" style="width: 50px;">
-                    </div>
-                    <button type="submit">Visualizar Etiqueta</button>
+                    
+                    <button type="submit">Gerar PDF Agora</button>
                 </div>
             </form>
-            <p style="font-size: 0.8em; color: #666;">*Powered by Labelary API</p>
+            <div class="note" style="margin-top: 20px;">
+                <strong>Como funciona:</strong> Este sistema ignora as imagens "quebradas" do código ZPL e gera códigos de barras (Code128) e QR Codes novos e nítidos localmente. Use o campo de upload para inserir sua logo.
+            </div>
         </div>
+
         <div class="preview-area">
-            <iframe name="pdfFrame" title="Visualização da Etiqueta"></iframe>
+            <iframe name="pdfFrame" title="Visualização"></iframe>
         </div>
     </div>
+
 </body>
 </html>
