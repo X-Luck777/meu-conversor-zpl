@@ -1,17 +1,15 @@
 from flask import Flask, render_template, request, Response
-import requests
 import io
-from pypdf import PdfWriter, PdfReader
+import re
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import inch, mm
+from reportlab.lib.utils import ImageReader
+import barcode
+from barcode.writer import ImageWriter
+import qrcode
+from PIL import Image
 
 app = Flask(__name__)
-
-# Configurações
-LABELARY_API = "http://api.labelary.com/v1/printers"
-
-# Limites de Segurança
-# Reduzimos para lotes menores para garantir que etiquetas com imagens passem
-MAX_LABELS_PER_BATCH = 10  # Maximo de etiquetas por vez
-MAX_BYTES_PER_BATCH = 150000 # 150KB por requisição (Segurança contra erro 413)
 
 @app.route('/')
 def home():
@@ -19,85 +17,119 @@ def home():
 
 @app.route('/api/preview', methods=['POST'])
 def preview_label():
-    raw_zpl = request.form.get('zpl_code', '')
-    dpmm = request.form.get('density', '8dpmm')
-    width = request.form.get('width', '4')
-    height = request.form.get('height', '6')
+    zpl_data = request.form.get('zpl_code', '')
+    logo_file = request.files.get('logo_file') # Recebe a logo (opcional)
     
-    if not raw_zpl.strip():
-        return "Erro: Código ZPL vazio", 400
+    # Prepara a imagem da logo se foi enviada
+    logo_img = None
+    if logo_file:
+        try:
+            logo_img = ImageReader(logo_file)
+        except:
+            pass
 
-    # 1. Separa as etiquetas (Split)
-    # Adicionamos o ^XZ de volta pois o split o remove
-    labels = [label + '^XZ' for label in raw_zpl.split('^XZ') if label.strip()]
+    # Configuração da Etiqueta (Padrão 4x6 polegadas = 10x15cm)
+    label_width = 4 * inch
+    label_height = 6 * inch
     
-    # Limpeza de espaços extras no final
-    if labels and not labels[-1].strip().endswith('^XZ'):
-        labels.pop()
-
-    if not labels:
-        return "Nenhuma etiqueta válida identificada (faltou ^XZ?)", 400
-
-    # 2. Criação Inteligente de Lotes (Chunking por Tamanho e Quantidade)
-    batches = []
-    current_batch = []
-    current_size = 0
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=(label_width, label_height))
     
-    for label in labels:
-        label_size = len(label.encode('utf-8')) # Tamanho em bytes
-        
-        # Verifica se adicionar essa etiqueta estoura o limite de bytes ou de quantidade
-        if (current_size + label_size > MAX_BYTES_PER_BATCH) or (len(current_batch) >= MAX_LABELS_PER_BATCH):
-            if current_batch: # Salva o lote atual se não estiver vazio
-                batches.append(current_batch)
-            # Começa um novo lote com a etiqueta atual
-            current_batch = [label]
-            current_size = label_size
-        else:
-            # Adiciona ao lote atual
-            current_batch.append(label)
-            current_size += label_size
+    # Separa as etiquetas
+    labels = [l for l in zpl_data.split('^XZ') if l.strip()]
+
+    for label_zpl in labels:
+        draw_label(c, label_zpl, label_height, logo_img)
+        c.showPage()
+
+    c.save()
+    buffer.seek(0)
+
+    return Response(
+        buffer.getvalue(),
+        mimetype='application/pdf',
+        headers={'Content-Disposition': 'inline; filename=etiquetas_pro.pdf'}
+    )
+
+def draw_label(c, zpl, label_h, logo_img):
+    """Renderiza Textos, Barcodes e QR Codes localmente"""
+    
+    # 1. Se tiver logo, desenha ela no topo esquerdo (padrão de logística)
+    if logo_img:
+        # Ajuste a posição (x, y, largura, altura) conforme sua necessidade
+        c.drawImage(logo_img, 10, label_h - 60, width=50, height=50, mask='auto')
+
+    # Regex para capturar comandos
+    commands = re.split(r'\^(?=[A-Z]{2})', zpl)
+    
+    current_x = 0
+    current_y = 0
+    font_size = 10
+    
+    for cmd in commands:
+        if not cmd: continue
+        try:
+            cmd_type = cmd[:2]
+            params = cmd[2:].split(',')
             
-    if current_batch:
-        batches.append(current_batch) # Adiciona o último lote
+            # --- POSIÇÃO (^FO) ---
+            if cmd_type == 'FO':
+                # Conversão aproximada: 1 dot = 0.35mm (para impressoras 203dpi)
+                current_x = int(params[0]) * 0.35 
+                # Inverte o Y (PDF cresce pra cima, ZPL cresce pra baixo)
+                current_y = label_h - (int(params[1]) * 0.35)
 
-    # 3. Processamento dos Lotes
-    pdf_merger = PdfWriter()
-    
-    url = f"{LABELARY_API}/{dpmm}/labels/{width}x{height}/0/"
-    headers = {'Accept': 'application/pdf'}
-
-    try:
-        for i, batch in enumerate(batches):
-            zpl_payload = '\n'.join(batch)
+            # --- FONTE (^A0, ^CF) ---
+            elif cmd_type == 'CF' or cmd_type == 'A0':
+                h = int(params[0]) if params[0].isdigit() else 20
+                font_size = h * 0.8
             
-            # Envia para a API
-            response = requests.post(url, headers=headers, data=zpl_payload, timeout=60)
-            
-            if response.status_code == 200:
-                chunk_pdf = io.BytesIO(response.content)
-                pdf_reader = PdfReader(chunk_pdf)
-                for page in pdf_reader.pages:
-                    pdf_merger.add_page(page)
-            else:
-                # Se der erro, mostramos qual lote falhou
-                return f"Erro ao processar o lote {i+1}: A API recusou o tamanho. Tente enviar menos etiquetas.", 500
+            # --- TEXTO (^FD) ---
+            elif cmd_type == 'FD':
+                text = cmd[2:].split('^')[0]
+                c.setFont("Helvetica-Bold", font_size)
+                # Verifica se é hexadecimal puro (às vezes acontece)
+                if not re.match(r'^[0-9A-F]+$', text): 
+                    c.drawString(current_x, current_y - font_size, text)
 
-        # 4. Finalização
-        output_pdf = io.BytesIO()
-        pdf_merger.write(output_pdf)
-        output_pdf.seek(0)
+            # --- CÓDIGO DE BARRAS 128 (^BC) ---
+            elif cmd_type == 'BC':
+                # O texto do barcode geralmente vem no próximo ^FD
+                # Vamos procurar o próximo FD neste trecho
+                match = re.search(r'\^FD(.*?)\^FS', zpl[zpl.find(cmd):])
+                if match:
+                    code_data = match.group(1)
+                    # Gera o barcode na memória
+                    rv = io.BytesIO()
+                    Code128 = barcode.get_barcode_class('code128')
+                    writer = ImageWriter()
+                    # Configurações para o barcode ficar limpo (sem texto embaixo se quiser)
+                    bc = Code128(code_data, writer=writer)
+                    bc.write(rv, options={'write_text': False, 'module_height': 10.0, 'module_width': 0.3})
+                    rv.seek(0)
+                    
+                    # Desenha no PDF
+                    bc_img = ImageReader(rv)
+                    # Ajuste de tamanho do barcode
+                    c.drawImage(bc_img, current_x, current_y - 50, width=150, height=40)
 
-        return Response(
-            output_pdf.getvalue(),
-            mimetype='application/pdf',
-            headers={
-                'Content-Disposition': 'inline; filename=etiquetas_completas.pdf'
-            }
-        )
+            # --- QR CODE (^BQ) ---
+            elif cmd_type == 'BQ':
+                # QR Code no ZPL é chato, ele pede o conteudo no ^FD seguinte
+                match = re.search(r'\^FD(.*?)\^FS', zpl[zpl.find(cmd):])
+                if match:
+                    qr_data = match.group(1)
+                    # Alguns ZPLs de QR começam com QA,QM... removemos isso
+                    if len(qr_data) > 3 and qr_data[2] == ',': qr_data = qr_data[3:]
+                    
+                    # Gera QR
+                    qr = qrcode.make(qr_data)
+                    qr_mem = io.BytesIO()
+                    qr.save(qr_mem, format='PNG')
+                    qr_mem.seek(0)
+                    
+                    c.drawImage(ImageReader(qr_mem), current_x, current_y - 80, width=80, height=80)
 
-    except Exception as e:
-        return f"Erro interno no servidor: {str(e)}", 500
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+        except Exception as e:
+            # Ignora erros de parsing para não travar a etiqueta toda
+            pass
