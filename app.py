@@ -7,7 +7,11 @@ app = Flask(__name__)
 
 # Configurações
 LABELARY_API = "http://api.labelary.com/v1/printers"
-LIMIT_PER_REQUEST = 50  # Limite de segurança da API
+
+# Limites de Segurança
+# Reduzimos para lotes menores para garantir que etiquetas com imagens passem
+MAX_LABELS_PER_BATCH = 10  # Maximo de etiquetas por vez
+MAX_BYTES_PER_BATCH = 150000 # 150KB por requisição (Segurança contra erro 413)
 
 @app.route('/')
 def home():
@@ -24,41 +28,62 @@ def preview_label():
         return "Erro: Código ZPL vazio", 400
 
     # 1. Separa as etiquetas (Split)
-    # O ZPL usa ^XZ para indicar o fim de uma etiqueta. Vamos usar isso para contar.
-    # Adicionamos o ^XZ de volta porque o split remove.
+    # Adicionamos o ^XZ de volta pois o split o remove
     labels = [label + '^XZ' for label in raw_zpl.split('^XZ') if label.strip()]
     
-    # Se o split gerou algum lixo no final (espaços em branco), removemos
+    # Limpeza de espaços extras no final
     if labels and not labels[-1].strip().endswith('^XZ'):
         labels.pop()
 
-    # 2. Cria os lotes (Chunks) de 50 em 50
-    chunks = [labels[i:i + LIMIT_PER_REQUEST] for i in range(0, len(labels), LIMIT_PER_REQUEST)]
+    if not labels:
+        return "Nenhuma etiqueta válida identificada (faltou ^XZ?)", 400
+
+    # 2. Criação Inteligente de Lotes (Chunking por Tamanho e Quantidade)
+    batches = []
+    current_batch = []
+    current_size = 0
     
-    # Preparar o "Juntador" de PDFs
+    for label in labels:
+        label_size = len(label.encode('utf-8')) # Tamanho em bytes
+        
+        # Verifica se adicionar essa etiqueta estoura o limite de bytes ou de quantidade
+        if (current_size + label_size > MAX_BYTES_PER_BATCH) or (len(current_batch) >= MAX_LABELS_PER_BATCH):
+            if current_batch: # Salva o lote atual se não estiver vazio
+                batches.append(current_batch)
+            # Começa um novo lote com a etiqueta atual
+            current_batch = [label]
+            current_size = label_size
+        else:
+            # Adiciona ao lote atual
+            current_batch.append(label)
+            current_size += label_size
+            
+    if current_batch:
+        batches.append(current_batch) # Adiciona o último lote
+
+    # 3. Processamento dos Lotes
     pdf_merger = PdfWriter()
     
-    try:
-        url = f"{LABELARY_API}/{dpmm}/labels/{width}x{height}/0/"
-        headers = {'Accept': 'application/pdf'}
+    url = f"{LABELARY_API}/{dpmm}/labels/{width}x{height}/0/"
+    headers = {'Accept': 'application/pdf'}
 
-        # 3. Processa cada lote
-        for chunk in chunks:
-            # Junta o lote de volta em uma string ZPL única para enviar
-            zpl_chunk = '\n'.join(chunk)
+    try:
+        for i, batch in enumerate(batches):
+            zpl_payload = '\n'.join(batch)
             
-            response = requests.post(url, headers=headers, data=zpl_chunk, timeout=30)
+            # Envia para a API
+            response = requests.post(url, headers=headers, data=zpl_payload, timeout=60)
             
             if response.status_code == 200:
-                # Lê o PDF recebido e adiciona ao nosso arquivo final
                 chunk_pdf = io.BytesIO(response.content)
                 pdf_reader = PdfReader(chunk_pdf)
                 for page in pdf_reader.pages:
                     pdf_merger.add_page(page)
             else:
-                return f"Erro na API (Lote): {response.text}", 500
+                # Se der erro, mostramos qual lote falhou
+                return f"Erro ao processar o lote {i+1}: A API recusou o tamanho. Tente enviar menos etiquetas.", 500
 
-        # 4. Finaliza e envia o PDFzão completo
+        # 4. Finalização
         output_pdf = io.BytesIO()
         pdf_merger.write(output_pdf)
         output_pdf.seek(0)
@@ -72,7 +97,7 @@ def preview_label():
         )
 
     except Exception as e:
-        return f"Erro interno: {str(e)}", 500
+        return f"Erro interno no servidor: {str(e)}", 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
